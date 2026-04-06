@@ -18,15 +18,3 @@ services:
       - "5050:5050"
     volumes:
       - ./logs:/app/logs        # read bot logs
-
-  watchtower:
-    image: containrrr/watchtower
-    container_name: watchtower
-    restart: unless-stopped
-    environment:
-      - WATCHTOWER_CLEANUP=true
-      - WATCHTOWER_POLL_INTERVAL=300   # check every 5 min
-      - WATCHTOWER_INCLUDE_STOPPED=true
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - $HOME/.docker/config.json:/config.json:ro
