@@ -1,0 +1,32 @@
+services:
+  bot:
+    image: ghcr.io/oplopuser/hyper:latest
+    container_name: hyper-bot
+    restart: unless-stopped
+    command: ["python", "main.py"]
+    env_file: .env
+    volumes:
+      - ./logs:/app/logs        # bot logs (dashboard reads these)
+
+  dashboard:
+    image: ghcr.io/oplopuser/hyper:latest
+    container_name: hyper-dashboard
+    restart: unless-stopped
+    command: ["python", "dashboard.py"]
+    env_file: .env
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./logs:/app/logs        # read bot logs
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=300   # check every 5 min
+      - WATCHTOWER_INCLUDE_STOPPED=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /home/pi/.docker/config.json:/config.json:ro

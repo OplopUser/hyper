@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trade Activation Flow</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', -apple-system, system-ui, sans-serif; background: #0a0e17; color: #e2e8f0; padding: 40px 20px; }
+  h1 { text-align: center; font-size: 28px; margin-bottom: 8px; color: #f1f5f9; letter-spacing: -0.5px; }
+  .subtitle { text-align: center; color: #64748b; font-size: 14px; margin-bottom: 48px; }
+  .diagram { max-width: 900px; margin: 0 auto; position: relative; }
+
+  /* Connector lines */
+  .connector { display: flex; justify-content: center; padding: 0; }
+  .connector .line { width: 2px; height: 28px; background: #334155; }
+  .connector .arrow { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid #334155; }
+  .connector-wrap { display: flex; flex-direction: column; align-items: center; }
+
+  /* Node base */
+  .node { border-radius: 12px; padding: 16px 24px; margin: 0 auto; position: relative; max-width: 700px; }
+  .node-title { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
+  .node-desc { font-size: 13px; opacity: 0.8; line-height: 1.5; }
+  .node-detail { font-size: 12px; color: #94a3b8; margin-top: 6px; font-family: 'SF Mono', 'Fira Code', monospace; }
+
+  /* Node types */
+  .node-trigger { background: linear-gradient(135deg, #1e1b4b, #312e81); border: 1px solid #4338ca; }
+  .node-trigger .node-title { color: #a5b4fc; }
+
+  .node-gate { background: linear-gradient(135deg, #1c1917, #292524); border: 1px solid #78716c; shape-outside: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%); }
+  .node-gate .node-title { color: #fbbf24; }
+  .node-gate::before { content: ''; position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 4px; height: 60%; background: #fbbf24; border-radius: 2px; }
+
+  .node-process { background: linear-gradient(135deg, #0c1a2e, #172554); border: 1px solid #1e40af; }
+  .node-process .node-title { color: #60a5fa; }
+
+  .node-signal { background: linear-gradient(135deg, #0d1f17, #052e16); border: 1px solid #15803d; }
+  .node-signal .node-title { color: #4ade80; }
+
+  .node-filter { background: linear-gradient(135deg, #1a1520, #2e1065); border: 1px solid #7c3aed; }
+  .node-filter .node-title { color: #c4b5fd; }
+
+  .node-risk { background: linear-gradient(135deg, #1f1208, #431407); border: 1px solid #c2410c; }
+  .node-risk .node-title { color: #fb923c; }
+
+  .node-exec { background: linear-gradient(135deg, #042f2e, #134e4a); border: 1px solid #0d9488; }
+  .node-exec .node-title { color: #2dd4bf; }
+
+  .node-success { background: linear-gradient(135deg, #052e16, #14532d); border: 2px solid #22c55e; }
+  .node-success .node-title { color: #4ade80; font-size: 16px; }
+
+  /* Reject label */
+  .reject-label { display: inline-block; font-size: 11px; color: #f87171; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); padding: 2px 8px; border-radius: 4px; margin-top: 6px; font-weight: 600; }
+
+  /* Section headers */
+  .section { margin-top: 16px; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; max-width: 700px; margin-left: auto; margin-right: auto; }
+  .section-line { flex: 1; height: 1px; background: #1e293b; }
+  .section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #475569; font-weight: 600; white-space: nowrap; }
+
+  /* Filter group */
+  .filter-group { border: 1px dashed #4c1d95; border-radius: 16px; padding: 20px 16px; max-width: 720px; margin: 0 auto; background: rgba(76, 29, 149, 0.05); }
+  .filter-group-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #7c3aed; font-weight: 700; margin-bottom: 12px; text-align: center; }
+
+  /* Legend */
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; margin-top: 48px; padding: 20px; border: 1px solid #1e293b; border-radius: 12px; max-width: 700px; margin-left: auto; margin-right: auto; }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #94a3b8; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+
+  /* Config badge */
+  .config { display: inline-block; font-size: 11px; background: rgba(100,116,139,0.15); border: 1px solid #334155; padding: 1px 6px; border-radius: 4px; color: #94a3b8; font-family: 'SF Mono', 'Fira Code', monospace; margin: 1px 2px; }
+</style>
+</head>
+<body>
+
+<h1>Trade Activation Flow</h1>
+<p class="subtitle">Hyper Bot &mdash; from loop iteration to order execution</p>
+
+<div class="diagram">
+
+  <!-- 1. TRIGGER -->
+  <div class="node node-trigger">
+    <div class="node-title">Main Loop Tick</div>
+    <div class="node-desc">Bot wakes every <span class="config">60s</span> and iterates over each symbol in <span class="config">SYMBOLS</span></div>
+  </div>
+
+  <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+  <!-- 2. PRICE -->
+  <div class="node node-process">
+    <div class="node-title">Fetch Mid Price</div>
+    <div class="node-desc">Get current market mid-price from exchange</div>
+    <div class="reject-label">Skip iteration if unavailable</div>
+  </div>
+
+  <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+  <!-- 3. EXISTING POSITION -->
+  <div class="node node-process">
+    <div class="node-title">Manage Existing Positions</div>
+    <div class="node-desc">Check if any open position hit stop-loss or take-profit &rarr; close if triggered</div>
+  </div>
+
+  <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+  <div class="section"><div class="section-line"></div><div class="section-label">Risk Pre-checks</div><div class="section-line"></div></div>
+
+  <!-- 4. RISK GATE -->
+  <div class="node node-gate">
+    <div class="node-title">Can Open Trade?</div>
+    <div class="node-desc">
+      &bull; Trading not halted (drawdown &lt; <span class="config">10%</span>)<br>
+      &bull; Account equity &gt; 0<br>
+      &bull; Open positions &lt; <span class="config">max 3</span><br>
+      &bull; No existing position for this symbol
+    </div>
+    <div class="reject-label">Any check fails &rarr; skip symbol</div>
+  </div>
+
+  <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+  <div class="section"><div class="section-line"></div><div class="section-label">Data Fetching</div><div class="section-line"></div></div>
+
+  <!-- 5. CANDLES -->
+  <div class="node node-process">
+    <div class="node-title">Fetch Candles</div>
+    <div class="node-desc">
+      Primary: <span class="config">15m</span> &times; <span class="config">200 candles</span><br>
+      HTF: <span class="config">4h</span> &times; <span class="config">100 candles</span> (for trend filter)
+    </div>
+    <div class="reject-label">Skip if primary candles empty</div>
+  </div>
+
+  <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+  <div class="section"><div class="section-line"></div><div class="section-label">Signal Generation</div><div class="section-line"></div></div>
+
+  <!-- 6. INDICATORS -->
+  <div class="node node-signal">
+    <div class="node-title">Compute Indicators</div>
+    <div class="node-desc">
+      EMA Fast <span class="config">9</span> &bull; EMA Slow <span class="config">21</span> &bull; RSI <span class="config">14</span> &bull; ATR <span class="config">14</span>
+    </div>
+    <div class="node-detail">Requires &ge; 50 candles and &ge; 2 valid indicator rows</div>
+  </div>
+
+  <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+  <!-- 7. CROSSOVER -->
+  <div class="node node-gate">
+    <div class="node-title">EMA Crossover Detected?</div>
+    <div class="node-desc">
+      <strong>LONG:</strong> prev_fast &le; prev_slow AND curr_fast &gt; curr_slow<br>
+      <strong>SHORT:</strong> prev_fast &ge; prev_slow AND curr_fast &lt; curr_slow
+    </div>
+    <div class="reject-label">No crossover &rarr; Signal = NONE, stop</div>
+  </div>
+
+  <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+  <!-- FILTER GROUP -->
+  <div class="filter-group">
+    <div class="filter-group-title">Signal Filters (all must pass)</div>
+
+    <!-- Filter 1: RSI -->
+    <div class="node node-filter">
+      <div class="node-title">Filter 1: RSI Range</div>
+      <div class="node-desc">RSI must be between <span class="config">30</span> and <span class="config">70</span> (neutral zone)</div>
+      <div class="reject-label">Oversold / overbought &rarr; blocked</div>
+    </div>
+
+    <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+    <!-- Filter 2: HTF Trend -->
+    <div class="node node-filter">
+      <div class="node-title">Filter 2: HTF Trend Alignment</div>
+      <div class="node-desc">
+        4h EMA(<span class="config">21</span>) determines trend<br>
+        <strong>LONG</strong> only if trend = bullish &bull; <strong>SHORT</strong> only if trend = bearish
+      </div>
+      <div class="reject-label">Counter-trend &rarr; blocked</div>
+    </div>
+
+    <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+    <!-- Filter 3: Volatility -->
+    <div class="node node-filter">
+      <div class="node-title">Filter 3: Volatility Regime</div>
+      <div class="node-desc">
+        ATR percentile over last 100 candles<br>
+        &bull; Low (&lt; <span class="config">20th %ile</span>): ranging &rarr; block<br>
+        &bull; High (&gt; <span class="config">95th %ile</span>): chaos &rarr; block<br>
+        &bull; Normal: allow
+      </div>
+      <div class="reject-label">Extreme volatility &rarr; blocked</div>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+  <div class="section"><div class="section-line"></div><div class="section-label">Trade Setup</div><div class="section-line"></div></div>
+
+  <!-- 8. SL/TP -->
+  <div class="node node-signal">
+    <div class="node-title">Compute SL / TP</div>
+    <div class="node-desc">
+      <strong>LONG:</strong> SL = entry &minus; ATR &times; <span class="config">1.5</span> &nbsp;|&nbsp; TP = entry + ATR &times; <span class="config">3.0</span><br>
+      <strong>SHORT:</strong> SL = entry + ATR &times; <span class="config">1.5</span> &nbsp;|&nbsp; TP = entry &minus; ATR &times; <span class="config">3.0</span>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+  <!-- 9. VALIDATE SL/TP -->
+  <div class="node node-gate">
+    <div class="node-title">Validate SL / TP</div>
+    <div class="node-desc">LONG: SL &lt; entry &lt; TP &nbsp;&bull;&nbsp; SHORT: TP &lt; entry &lt; SL</div>
+    <div class="reject-label">Invalid levels &rarr; skip</div>
+  </div>
+
+  <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+  <div class="section"><div class="section-line"></div><div class="section-label">Position Sizing</div><div class="section-line"></div></div>
+
+  <!-- 10. SIZING -->
+  <div class="node node-risk">
+    <div class="node-title">Compute Position Size</div>
+    <div class="node-desc">
+      size = (equity &times; <span class="config">2% risk</span> &times; <span class="config">1x leverage</span>) / |entry &minus; SL|
+    </div>
+    <div class="node-detail">Rounded to exchange decimals, notional &ge; $10 min order</div>
+    <div class="reject-label">Below minimum &rarr; skip</div>
+  </div>
+
+  <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+  <div class="section"><div class="section-line"></div><div class="section-label">Execution</div><div class="section-line"></div></div>
+
+  <!-- 11. ORDER -->
+  <div class="node node-exec">
+    <div class="node-title">Place Market Order (IOC)</div>
+    <div class="node-desc">Submit aggressive limit order via Hyperliquid SDK</div>
+    <div class="reject-label">SDK failure &rarr; log & continue</div>
+  </div>
+
+  <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+  <!-- 12. RECORD -->
+  <div class="node node-exec">
+    <div class="node-title">Record Position</div>
+    <div class="node-desc">Create PositionRecord in RiskManager &mdash; tracks SL/TP for subsequent iterations</div>
+  </div>
+
+  <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
+
+  <!-- SUCCESS -->
+  <div class="node node-success" style="text-align:center;">
+    <div class="node-title">Trade Activated</div>
+  </div>
+
+</div>
+
+<!-- Legend -->
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:#4338ca;"></div> Loop trigger</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#1e40af;"></div> Data / process</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#fbbf24;"></div> Gate / decision</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#15803d;"></div> Signal computation</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#7c3aed;"></div> Signal filter</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#c2410c;"></div> Risk / sizing</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#0d9488;"></div> Execution</div>
+</div>
+
+</body>
+</html>

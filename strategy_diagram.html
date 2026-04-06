@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trading Strategy Diagram</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    padding: 32px 24px;
+    min-height: 100vh;
+  }
+
+  h1 {
+    text-align: center;
+    font-size: 22px;
+    font-weight: 600;
+    color: #58a6ff;
+    margin-bottom: 6px;
+    letter-spacing: 0.5px;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 13px;
+    color: #8b949e;
+    margin-bottom: 36px;
+  }
+
+  /* ── Chart area ── */
+  .chart-section {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 24px 28px;
+    margin-bottom: 28px;
+  }
+  .chart-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #8b949e;
+    margin-bottom: 16px;
+  }
+
+  svg text { font-family: inherit; }
+
+  /* ── Flow diagram ── */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    margin-bottom: 28px;
+  }
+  .flow-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: 100%;
+  }
+
+  .node {
+    border-radius: 10px;
+    padding: 14px 20px;
+    font-size: 13px;
+    font-weight: 500;
+    text-align: center;
+    min-width: 160px;
+    line-height: 1.4;
+    border: 1px solid transparent;
+  }
+  .node-data   { background: #1c2333; border-color: #388bfd; color: #79c0ff; }
+  .node-signal { background: #1c2333; border-color: #3fb950; color: #56d364; }
+  .node-filter { background: #1c2333; border-color: #d29922; color: #e3b341; }
+  .node-risk   { background: #1c2333; border-color: #bc8cff; color: #d2a8ff; }
+  .node-order  { background: #1c2333; border-color: #f78166; color: #ffa198; }
+  .node-exit   { background: #1c2333; border-color: #ff7b72; color: #ffa198; }
+  .node-none   { background: #161b22; border-color: #30363d; color: #8b949e; font-size: 12px; }
+
+  .arrow {
+    color: #484f58;
+    font-size: 20px;
+    line-height: 1;
+    padding: 2px 0;
+  }
+  .arrow-side {
+    color: #484f58;
+    font-size: 18px;
+  }
+
+  .label-yes { font-size: 11px; color: #3fb950; font-weight: 600; margin-right: 4px; }
+  .label-no  { font-size: 11px; color: #f78166; font-weight: 600; margin-left: 4px; }
+
+  /* ── Indicator cards ── */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-bottom: 28px;
+  }
+  .card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 18px;
+  }
+  .card-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+  }
+  .card-title.blue  { color: #58a6ff; }
+  .card-title.green { color: #3fb950; }
+  .card-title.purple{ color: #bc8cff; }
+  .card-title.orange{ color: #e3b341; }
+
+  .card p { font-size: 13px; color: #8b949e; line-height: 1.6; }
+  .card p strong { color: #e6edf3; }
+
+  /* ── SL/TP visual ── */
+  .sltp-section {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 24px 28px;
+    margin-bottom: 28px;
+  }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    justify-content: center;
+    font-size: 12px;
+    color: #8b949e;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .dot-blue   { background: #388bfd; }
+  .dot-green  { background: #3fb950; }
+  .dot-yellow { background: #e3b341; }
+  .dot-purple { background: #bc8cff; }
+  .dot-red    { background: #f78166; }
+</style>
+</head>
+<body>
+
+<h1>EMA Crossover + RSI Filter Strategy</h1>
+<p class="subtitle">Hyperliquid Perpetuals Bot — BTC/USD · 15m candles · Every 60s</p>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- FLOW DIAGRAM -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="chart-section">
+  <div class="chart-label">Decision flow — every 60 seconds</div>
+
+  <div class="flow">
+
+    <!-- Step 1: Data -->
+    <div class="flow-row">
+      <div class="node node-data">📡 Fetch candles<br><small style="color:#484f58">Reservoir S3 → live fallback</small></div>
+    </div>
+    <div class="flow-row"><div class="arrow">↓</div></div>
+
+    <!-- Step 2: Indicators -->
+    <div class="flow-row">
+      <div class="node node-data">📐 Compute indicators<br><small style="color:#484f58">EMA(9) · EMA(21) · RSI(14) · ATR(14)</small></div>
+    </div>
+    <div class="flow-row"><div class="arrow">↓</div></div>
+
+    <!-- Step 3: Crossover check -->
+    <div class="flow-row">
+      <div class="node node-signal">⚡ EMA crossover?<br><small style="color:#484f58">Fast EMA crossed Slow EMA?</small></div>
+    </div>
+
+    <!-- Branch: NO -->
+    <div class="flow-row" style="justify-content:center; gap:60px; width:100%;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+        <div class="arrow">↓</div>
+        <span class="label-yes">YES</span>
+      </div>
+      <div style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:20px">
+        <span class="label-no">NO</span>
+        <div class="arrow-side">→</div>
+        <div class="node node-none">😴 No signal<br>Wait next cycle</div>
+      </div>
+    </div>
+
+    <!-- Step 4: RSI filter -->
+    <div class="flow-row">
+      <div class="node node-filter">🔍 RSI filter<br><small style="color:#484f58">30 &lt; RSI &lt; 70?</small></div>
+    </div>
+
+    <!-- Branch: RSI blocked -->
+    <div class="flow-row" style="justify-content:center; gap:60px; width:100%;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+        <div class="arrow">↓</div>
+        <span class="label-yes">YES</span>
+      </div>
+      <div style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:20px">
+        <span class="label-no">NO</span>
+        <div class="arrow-side">→</div>
+        <div class="node node-none">🚫 Blocked<br>Overbought/oversold</div>
+      </div>
+    </div>
+
+    <!-- Step 5: Risk checks -->
+    <div class="flow-row">
+      <div class="node node-risk">🛡️ Risk checks<br><small style="color:#484f58">Max positions · Equity · SL/TP valid</small></div>
+    </div>
+    <div class="flow-row"><div class="arrow">↓</div></div>
+
+    <!-- Step 6: Size -->
+    <div class="flow-row">
+      <div class="node node-risk">📏 Size position<br><small style="color:#484f58">2% equity risk ÷ price distance to SL</small></div>
+    </div>
+    <div class="flow-row"><div class="arrow">↓</div></div>
+
+    <!-- Step 7: Order -->
+    <div class="flow-row" style="gap:24px;">
+      <div class="node node-order" style="border-color:#3fb950;color:#56d364;">🟢 LONG<br><small style="color:#484f58">Market buy</small></div>
+      <div style="color:#484f58;font-size:13px;align-self:center;">or</div>
+      <div class="node node-order" style="border-color:#f78166;color:#ffa198;">🔴 SHORT<br><small style="color:#484f58">Market sell</small></div>
+    </div>
+    <div class="flow-row"><div class="arrow">↓</div></div>
+
+    <!-- Step 8: Monitor -->
+    <div class="flow-row">
+      <div class="node node-exit">👁️ Monitor every 60s<br><small style="color:#484f58">Check SL / TP hit → close position</small></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- INDICATOR CARDS -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="cards">
+
+  <div class="card">
+    <div class="card-title blue">EMA Crossover</div>
+    <p>
+      <strong>Fast EMA (9)</strong> reacts quickly to price.<br>
+      <strong>Slow EMA (21)</strong> shows the trend.<br><br>
+      🟢 Fast crosses <strong>above</strong> Slow → Long<br>
+      🔴 Fast crosses <strong>below</strong> Slow → Short<br><br>
+      Only triggers on the <strong>candle the cross occurs</strong> — no lag entries.
+    </p>
+  </div>
+
+  <div class="card">
+    <div class="card-title orange">RSI Filter (14)</div>
+    <p>
+      Prevents chasing <strong>overextended</strong> moves.<br><br>
+      <strong>RSI &lt; 30</strong> = oversold → don't short<br>
+      <strong>RSI &gt; 70</strong> = overbought → don't long<br>
+      <strong>30–70</strong> = neutral zone → trade OK<br><br>
+      Keeps the bot out of exhausted trends.
+    </p>
+  </div>
+
+  <div class="card">
+    <div class="card-title purple">ATR (14) — SL &amp; TP</div>
+    <p>
+      Sizes stop-loss &amp; take-profit to <strong>current volatility</strong>.<br><br>
+      <strong>Stop-loss</strong> = 1.5 × ATR from entry<br>
+      <strong>Take-profit</strong> = 3.0 × ATR from entry<br><br>
+      Risk/reward ratio: <strong>1 : 2</strong> minimum.<br>
+      Wide markets get wider stops automatically.
+    </p>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SL / TP VISUAL -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="sltp-section">
+  <div class="chart-label">Stop-loss &amp; Take-profit placement (Long example)</div>
+  <svg viewBox="0 0 700 180" width="100%" style="display:block;">
+
+    <!-- Price line (rough uptrend) -->
+    <polyline points="20,140 80,130 140,120 200,125 260,110 320,100 380,105 420,90"
+      fill="none" stroke="#30363d" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+    <!-- Entry point -->
+    <circle cx="420" cy="90" r="6" fill="#58a6ff"/>
+    <text x="432" y="94" fill="#58a6ff" font-size="12" font-weight="600">Entry</text>
+
+    <!-- TP line -->
+    <line x1="80" y1="38" x2="620" y2="38" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="6,3"/>
+    <text x="625" y="42" fill="#3fb950" font-size="11" font-weight="600">Take Profit</text>
+    <text x="625" y="55" fill="#3fb950" font-size="10">+3.0 × ATR</text>
+
+    <!-- Entry line -->
+    <line x1="80" y1="90" x2="620" y2="90" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,4"/>
+
+    <!-- SL line -->
+    <line x1="80" y1="142" x2="620" y2="142" stroke="#f78166" stroke-width="1.5" stroke-dasharray="6,3"/>
+    <text x="625" y="146" fill="#f78166" font-size="11" font-weight="600">Stop Loss</text>
+    <text x="625" y="159" fill="#f78166" font-size="10">−1.5 × ATR</text>
+
+    <!-- Bracket lines -->
+    <line x1="560" y1="38" x2="560" y2="90" stroke="#3fb950" stroke-width="1" opacity="0.5"/>
+    <line x1="560" y1="90" x2="560" y2="142" stroke="#f78166" stroke-width="1" opacity="0.5"/>
+
+    <!-- Labels on bracket -->
+    <text x="566" y="67" fill="#3fb950" font-size="11">Profit zone</text>
+    <text x="566" y="119" fill="#f78166" font-size="11">Risk zone</text>
+
+    <!-- Ratio callout -->
+    <rect x="20" y="50" width="90" height="36" rx="6" fill="#1c2333" stroke="#bc8cff" stroke-width="1"/>
+    <text x="65" y="68" fill="#bc8cff" font-size="11" font-weight="700" text-anchor="middle">Reward : Risk</text>
+    <text x="65" y="80" fill="#d2a8ff" font-size="13" font-weight="700" text-anchor="middle">2 : 1</text>
+
+    <!-- EMA cross marker -->
+    <circle cx="420" cy="90" r="12" fill="none" stroke="#58a6ff" stroke-width="1.5" opacity="0.4"/>
+    <text x="390" y="112" fill="#58a6ff" font-size="10">EMA cross</text>
+
+  </svg>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- RISK RULES -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="cards" style="grid-template-columns: repeat(2,1fr);">
+  <div class="card">
+    <div class="card-title green">Position Sizing</div>
+    <p>
+      <strong>Formula:</strong><br>
+      Size = (Equity × 2%) ÷ |Entry − Stop Loss|<br><br>
+      If equity = $1,000 and SL is $200 away:<br>
+      Size = $20 ÷ $200 = <strong>0.1 BTC</strong><br><br>
+      Max loss per trade: <strong>$20 (2% of equity)</strong>
+    </p>
+  </div>
+  <div class="card">
+    <div class="card-title purple">Safety Rules</div>
+    <p>
+      🔴 <strong>Max 3</strong> open positions at once<br>
+      🔴 <strong>10% drawdown</strong> halts all new trades<br>
+      🔴 Only <strong>1 position per coin</strong> at a time<br>
+      🔴 Minimum order <strong>$10 notional</strong><br>
+      🔴 Emergency close all on <strong>shutdown</strong>
+    </p>
+  </div>
+</div>
+
+<div class="legend" style="margin-top:8px;">
+  <div class="legend-item"><div class="dot dot-blue"></div> Data / Indicators</div>
+  <div class="legend-item"><div class="dot dot-green"></div> Signal / Long</div>
+  <div class="legend-item"><div class="dot dot-yellow"></div> RSI Filter</div>
+  <div class="legend-item"><div class="dot dot-purple"></div> Risk Management</div>
+  <div class="legend-item"><div class="dot dot-red"></div> Orders / Stop-Loss</div>
+</div>
+
+</body>
+</html>

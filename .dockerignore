@@ -1,0 +1,36 @@
+# Secrets
+.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Logs & runtime data
+logs/
+backtest_results.json
+
+# Git & IDE
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+.claude/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Docs & diagrams
+*.md
+*.html
+watchdog.sh
