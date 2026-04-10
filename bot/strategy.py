@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Optional
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -40,6 +40,12 @@ import config
 from utils.logger import get_logger, log_signal
 
 log = get_logger(__name__)
+
+
+# Per-symbol cache of the last bar timestamp we already emitted a signal for.
+# Prevents re-firing on the same (still-forming or closed) candle across
+# successive 60s polling iterations.
+_last_signal_bar: Dict[str, pd.Timestamp] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -233,11 +239,16 @@ def compute_signal(
 
     df = _compute_indicators(df.copy(), cfg)
     df = df.dropna(subset=["ema_fast", "ema_slow", "rsi", "atr"])
-    if len(df) < 2:
+    # Need at least 3 rows: [-3] = prior closed, [-2] = last closed, [-1] = forming
+    if len(df) < 3:
         return Signal(direction=Direction.NONE)
 
-    prev = df.iloc[-2]
-    curr = df.iloc[-1]
+    # Evaluate on the LAST CLOSED candle, not the still-forming one.
+    # df.iloc[-1] is the in-progress bar — its EMAs flicker intra-bar and
+    # cause the same crossover to re-fire every minute. By using iloc[-2]
+    # as curr and iloc[-3] as prev, we only signal once per closed bar.
+    prev = df.iloc[-3]
+    curr = df.iloc[-2]
 
     curr_fast = float(curr["ema_fast"])
     curr_slow = float(curr["ema_slow"])
@@ -246,6 +257,19 @@ def compute_signal(
     rsi       = float(curr["rsi"])
     atr       = float(curr["atr"])
     close     = float(curr["close"])
+
+    # Per-bar de-dupe: if we already processed this closed bar for this
+    # symbol, return no-signal without re-running the filters.
+    curr_ts = curr.get("timestamp") if "timestamp" in curr else None
+    last_ts = _last_signal_bar.get(symbol)
+    if curr_ts is not None and last_ts is not None and curr_ts == last_ts:
+        log.debug("[%s] Already evaluated bar %s — skipping", symbol, curr_ts)
+        return Signal(
+            direction=Direction.NONE,
+            fast_ema=curr_fast, slow_ema=curr_slow,
+            rsi=rsi, atr=atr, close=close,
+            blocked_by="already_signaled_this_bar",
+        )
 
     # --- HTF trend filter ---
     htf_trend = "unknown"
@@ -296,6 +320,10 @@ def compute_signal(
 
     # --- All filters passed: signal confirmed ---
     stop_loss, take_profit = _sl_tp(direction, close, atr, cfg)
+
+    # Mark this bar as signaled so we don't re-emit on the next poll
+    if curr_ts is not None:
+        _last_signal_bar[symbol] = curr_ts
 
     log_signal(
         symbol=symbol,

@@ -104,6 +104,19 @@ class RiskManager:
         if self._cfg.leverage and self._cfg.leverage > 1:
             raw_size *= self._cfg.leverage
 
+        # Cap by available margin so we never try to open a position larger
+        # than equity × leverage. Leave a 5% buffer for fees and IOC slippage.
+        leverage = max(self._cfg.leverage or 1, 1)
+        max_notional = account_equity * leverage * 0.95
+        if entry_price > 0:
+            max_size_by_margin = max_notional / entry_price
+            if raw_size > max_size_by_margin:
+                log.info(
+                    "Size capped by margin: %.6f → %.6f (equity=$%.2f lev=%dx)",
+                    raw_size, max_size_by_margin, account_equity, leverage,
+                )
+                raw_size = max_size_by_margin
+
         # Round down to exchange precision
         size = math.floor(raw_size * 10**sz_decimals) / 10**sz_decimals
 

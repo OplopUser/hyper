@@ -49,8 +49,10 @@ def _build_exchange() -> Exchange:
     Called once per ExchangeClient instantiation.
 
     The API wallet (PRIVATE_KEY) signs orders on behalf of the main
-    account (ACCOUNT_ADDRESS).  The API wallet was authorised on-chain
-    so the exchange recognises it automatically — no vault_address needed.
+    account (ACCOUNT_ADDRESS).  The SDK must be told which main account
+    the signer is acting for — otherwise it signs as the API wallet's
+    own address and Hyperliquid rejects with
+    "User or API Wallet … does not exist".
     """
     private_key = config.get_private_key()
     account_address = config.get_account_address()
@@ -62,9 +64,10 @@ def _build_exchange() -> Exchange:
     exchange = Exchange(
         account,
         base_url=base_url,
+        account_address=account_address,
     )
     log.info(
-        "Exchange initialised — api_wallet=%s  account=%s  network=%s",
+        "Exchange initialised — signer(api_wallet)=%s  owner(account)=%s  network=%s",
         account.address,
         account_address,
         "testnet" if config.USE_TESTNET else "mainnet",
@@ -393,6 +396,8 @@ class ExchangeClient:
     ) -> None:
         if not result:
             log.error("SDK returned empty result for %s %s %.6f", side, coin, size)
+            log_order("FAILED", coin, side, size, price,
+                      extra={"reason": "empty_response"})
             return
 
         status = result.get("status", "unknown")
@@ -410,4 +415,7 @@ class ExchangeClient:
                 pass
             log_order("CONFIRMED", coin, side, size, price, order_id)
         else:
-            log.warning("Order result status=%s: %s", status, result)
+            err_msg = result.get("response", result)
+            log.error("Order rejected status=%s: %s", status, err_msg)
+            log_order("FAILED", coin, side, size, price,
+                      extra={"status": status, "error": str(err_msg)[:160]})

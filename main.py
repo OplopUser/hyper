@@ -39,6 +39,24 @@ from utils.logger import get_logger, log_position, log_risk_event
 log = get_logger(__name__)
 
 
+def _order_ok(result: Optional[dict]) -> bool:
+    """Return True only if the SDK response clearly indicates a successful order."""
+    if not result:
+        return False
+    if result.get("status") != "ok":
+        return False
+    # Defensive: Hyperliquid sometimes returns status=ok with per-order errors
+    # in response.data.statuses[i]["error"]. Treat any such error as failure.
+    try:
+        statuses = result["response"]["data"]["statuses"]
+        for s in statuses:
+            if isinstance(s, dict) and "error" in s:
+                return False
+    except (KeyError, TypeError):
+        pass
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Startup validation
 # ---------------------------------------------------------------------------
@@ -183,8 +201,8 @@ def _iteration(
         sz_decimals=sz_decimals,
     )
 
-    if result is None:
-        log.error("[%s] Order submission failed.", symbol)
+    if not _order_ok(result):
+        log.error("[%s] Order submission failed (result=%s)", symbol, result)
         return
 
     # ------------------------------------------------------------------
@@ -311,10 +329,11 @@ def main() -> None:
     signal.signal(signal.SIGTERM, shutdown_handler)
 
     # --- Set leverage for all symbols ---
-    if config.RISK.leverage > 1:
-        for sym in config.SYMBOLS:
-            log.info("Setting leverage for %s to %d×", sym, config.RISK.leverage)
-            exchange.set_leverage(sym, config.RISK.leverage, is_cross=True)
+    # Always set explicitly so the account's cross-leverage matches config
+    # (otherwise we inherit whatever the account was last set to).
+    for sym in config.SYMBOLS:
+        log.info("Setting leverage for %s to %d× cross", sym, config.RISK.leverage)
+        exchange.set_leverage(sym, config.RISK.leverage, is_cross=True)
 
     # --- Main loop ---
     iteration = 0
