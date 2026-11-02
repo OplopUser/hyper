@@ -35,7 +35,8 @@ def _env_int(key: str, default: int) -> int:
 
 
 def _env_bool(key: str, default: bool) -> bool:
-    raw = os.getenv(key, "").lower()
+    """Parse a boolean env var. Unset, empty or unrecognised values give *default*."""
+    raw = os.getenv(key, "").strip().lower()
     if raw in ("true", "1", "yes"):
         return True
     if raw in ("false", "0", "no"):
@@ -47,6 +48,8 @@ def _env_bool(key: str, default: bool) -> bool:
 # Network
 # ---------------------------------------------------------------------------
 
+# Parsed only here. main.py, bot/, data/ and dashboard.py all read
+# config.USE_TESTNET / config.HYPERLIQUID_API_URL instead of the raw env var.
 USE_TESTNET: bool = _env_bool("USE_TESTNET", default=True)
 
 # Base URLs — set automatically based on USE_TESTNET
@@ -166,6 +169,17 @@ class RiskConfig:
 # ---------------------------------------------------------------------------
 
 LOOP_INTERVAL: int = _env_int("LOOP_INTERVAL", 60)  # seconds between iterations
+
+# Back-off after a failed iteration (e.g. equity fetch failed): wait
+# ERROR_BACKOFF_INITIAL seconds, doubling on each consecutive failure up to
+# ERROR_BACKOFF_MAX. Reset after the next successful iteration.
+ERROR_BACKOFF_INITIAL: float = 5.0
+ERROR_BACKOFF_MAX: float = 300.0
+
+# Close every open position on SIGINT/SIGTERM. Off by default so that a
+# restart (docker restart, Watchtower image update) leaves positions open;
+# the next process re-adopts them on start-up.
+CLOSE_ON_SHUTDOWN: bool = _env_bool("CLOSE_ON_SHUTDOWN", default=False)
 
 # ---------------------------------------------------------------------------
 # Convenience singletons (imported directly by other modules)

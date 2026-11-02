@@ -26,14 +26,12 @@ from functools import lru_cache
 
 from flask import Flask, jsonify, render_template_string
 from hyperliquid.info import Info
-from dotenv import load_dotenv
 
-load_dotenv()
+import config  # loads .env; single source for USE_TESTNET / API URL
 
 # ── Config ────────────────────────────────────────────────────────────────────
-USE_TESTNET = os.getenv("USE_TESTNET", "true").lower() in ("true", "1", "yes")
-BASE_URL    = ("https://api.hyperliquid-testnet.xyz" if USE_TESTNET
-               else "https://api.hyperliquid.xyz")
+USE_TESTNET = config.USE_TESTNET
+BASE_URL    = config.HYPERLIQUID_API_URL
 ADDRESS     = os.getenv("ACCOUNT_ADDRESS", "")
 LOG_FILE    = Path(__file__).parent / "logs" / "bot.log"
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", 5050))

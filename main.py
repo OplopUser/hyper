@@ -9,12 +9,16 @@ The bot will:
   1. Validate environment / config on startup.
   2. Initialise all subsystems (market data, exchange client, risk manager).
   3. Enter the main loop for each symbol in SYMBOLS (every LOOP_INTERVAL seconds):
-       a. Refresh account equity and check drawdown.
+       a. Refresh account equity and check drawdown (on failure, back off
+          with capped exponential delay instead of retrying immediately).
        b. Fetch primary timeframe candles + higher timeframe (4h) candles.
        c. Compute EMA crossover signal with RSI, HTF trend, and volatility filters.
-       d. Manage existing positions (check SL/TP).
+       d. Manage existing positions (check SL/TP). A position already open on
+          the exchange that the bot isn't tracking (e.g. left open by a
+          restart) is adopted first, so it is managed and not doubled.
        e. Open new positions if signal is actionable and risk checks pass.
-  4. On KeyboardInterrupt or fatal error: close open positions and exit.
+  4. On SIGINT/SIGTERM: exit, leaving positions open for the next process
+     to adopt — unless CLOSE_ON_SHUTDOWN=true, which closes them first.
 
 Filters (v2):
   - HTF trend: only trade in the direction of the 4h EMA(21)
@@ -32,8 +36,9 @@ from typing import Optional
 import config
 from bot.exchange import ExchangeClient
 from bot.risk import PositionRecord, RiskManager
-from bot.strategy import Direction, Signal, compute_signal
+from bot.strategy import Direction, Signal, adopted_sl_tp, compute_signal
 from data.market import MarketData
+from utils.backoff import Backoff
 from utils.logger import get_logger, log_position, log_risk_event
 
 log = get_logger(__name__)
@@ -105,7 +110,9 @@ def _iteration(
     # ------------------------------------------------------------------
     # 2. Manage existing positions (stop-loss / take-profit)
     # ------------------------------------------------------------------
-    _manage_existing_positions(symbol, mid_price, exchange, risk)
+    if not _manage_existing_positions(symbol, mid_price, market, exchange, risk):
+        # Live position state unknown — never open a new trade blind.
+        return
 
     # ------------------------------------------------------------------
     # 3. Check if we should look for a new entry
@@ -230,22 +237,85 @@ def _iteration(
     )
 
 
+def _adopt_position(
+    symbol: str,
+    live_pos: dict,
+    market: MarketData,
+    risk: RiskManager,
+) -> Optional[PositionRecord]:
+    """
+    Start tracking a position that is open on the exchange but not in memory
+    (typically left open across a restart). SL/TP are rebuilt from the
+    exchange entry price and the current ATR. Returns None if that fails.
+    """
+    szi = float(live_pos.get("szi", 0))
+    entry_price = float(live_pos.get("entryPx") or 0)
+    direction = Direction.LONG if szi > 0 else Direction.SHORT
+    df = market.get_candles_df(
+        coin=symbol,
+        interval=config.STRATEGY.candle_interval,
+        lookback_candles=config.STRATEGY.candle_lookback,
+    )
+    sig = adopted_sl_tp(df, direction, entry_price) if entry_price > 0 else None
+    if sig is None:
+        log.warning("[%s] Existing %s position found but SL/TP could not be computed "
+                    "(no candle data?) — will retry; no new trades for %s until then.",
+                    symbol, direction.name.lower(), symbol)
+        return None
+
+    record = PositionRecord(
+        coin=symbol,
+        direction="long" if szi > 0 else "short",
+        entry_price=entry_price,
+        size=abs(szi),
+        stop_loss=sig.stop_loss,
+        take_profit=sig.take_profit,
+        signal=sig,
+    )
+    log.warning("[%s] Adopting existing %s position from exchange: size=%.6f entry=%.4f "
+                "sl=%.4f tp=%.4f (SL/TP rebuilt from current ATR=%.4f)",
+                symbol, record.direction, record.size, entry_price,
+                record.stop_loss, record.take_profit, sig.atr)
+    risk.record_open(record)
+    return record
+
+
 def _manage_existing_positions(
     symbol: str,
     current_price: float,
+    market: MarketData,
     exchange: ExchangeClient,
     risk: RiskManager,
-) -> None:
-    """Check existing positions for SL/TP hits and close them."""
-    record = risk.get_position_record(symbol)
-    if record is None:
-        return
+) -> bool:
+    """
+    Reconcile the tracked position for *symbol* with the exchange, adopt an
+    untracked one, and close it on SL/TP. Returns False if the live position
+    state is unknown (API failure, adoption failed) so the caller must not
+    open a new trade for this symbol this iteration.
+    """
+    positions = exchange.get_positions_or_none()
+    if positions is None:
+        log.warning("[%s] Could not fetch positions — skipping symbol this iteration.", symbol)
+        return False
+    live_pos = next((p for p in positions if p.get("coin") == symbol), None)
+    live_szi = float(live_pos.get("szi", 0)) if live_pos else 0.0
 
-    live_pos = exchange.get_position(symbol)
-    if live_pos is None or float(live_pos.get("szi", 0)) == 0:
+    record = risk.get_position_record(symbol)
+    if record is not None and live_szi == 0:
         log.info("[%s] Position no longer open on exchange — cleaning up.", symbol)
         risk.record_close(symbol)
-        return
+        return True
+    if record is not None and (live_szi > 0) != (record.direction == "long"):
+        log.warning("[%s] Exchange position side differs from tracked %s — re-adopting.",
+                    symbol, record.direction)
+        risk.record_close(symbol)
+        record = None
+    if record is None:
+        if live_szi == 0:
+            return True
+        record = _adopt_position(symbol, live_pos, market, risk)
+        if record is None:
+            return False
 
     unrealised_pnl = float(live_pos.get("unrealizedPnl", 0))
     log_position(
@@ -261,9 +331,9 @@ def _manage_existing_positions(
     should_close, reason = risk.should_close_position(record, current_price)
     if should_close:
         log.info("[%s] Closing %s position: %s", symbol, record.direction, reason)
-        sz_decimals = 3
-        exchange.close_position(symbol, sz_decimals=sz_decimals)
+        exchange.close_position(symbol, sz_decimals=market.get_sz_decimals(symbol))
         risk.record_close(symbol)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -277,16 +347,23 @@ def _request_shutdown(exchange: ExchangeClient, risk: RiskManager, *args) -> Non
     log.warning("Shutdown signal received — finishing current iteration.")
     _shutdown_requested = True
 
-def _emergency_close_all(exchange: ExchangeClient, risk: RiskManager) -> None:
+def _emergency_close_all(market: MarketData, exchange: ExchangeClient, risk: RiskManager) -> None:
     if not risk.open_coins:
         return
     log.warning("Emergency close: shutting down %d position(s).", risk.open_count)
     for coin in list(risk.open_coins):
         try:
-            exchange.close_position(coin)
+            exchange.close_position(coin, sz_decimals=market.get_sz_decimals(coin))
             risk.record_close(coin)
         except Exception as exc:
             log.error("Failed to close %s during shutdown: %s", coin, exc)
+
+
+def _interruptible_sleep(seconds: float) -> None:
+    """Sleep up to *seconds*, waking early if a shutdown is requested."""
+    sleep_end = time.monotonic() + seconds
+    while time.monotonic() < sleep_end and not _shutdown_requested:
+        time.sleep(max(0.0, min(1.0, sleep_end - time.monotonic())))
 
 
 # ---------------------------------------------------------------------------
@@ -302,10 +379,11 @@ def main() -> None:
              config.STRATEGY.ema_fast, config.STRATEGY.ema_slow,
              config.STRATEGY.rsi_period,
              config.STRATEGY.htf_interval, config.STRATEGY.htf_ema_period)
-    log.info("Risk: %.0f%%/trade | Max pos: %d | Drawdown halt: %.0f%%",
+    log.info("Risk: %.0f%%/trade | Max pos: %d | Drawdown halt: %.0f%% | Close on shutdown: %s",
              config.RISK.max_risk_per_trade * 100,
              config.RISK.max_positions,
-             config.RISK.max_drawdown_halt * 100)
+             config.RISK.max_drawdown_halt * 100,
+             config.CLOSE_ON_SHUTDOWN)
     log.info("=" * 60)
 
     # --- Validate ---
@@ -336,6 +414,9 @@ def main() -> None:
         exchange.set_leverage(sym, config.RISK.leverage, is_cross=True)
 
     # --- Main loop ---
+    # Positions already open on the exchange (e.g. left by a restart) are
+    # adopted per symbol in _manage_existing_positions on the first iteration.
+    backoff = Backoff(config.ERROR_BACKOFF_INITIAL, config.ERROR_BACKOFF_MAX)
     iteration = 0
     while not _shutdown_requested:
         iteration += 1
@@ -345,8 +426,14 @@ def main() -> None:
         # Fetch equity once per iteration (shared across all symbols)
         equity = exchange.get_account_equity()
         if equity is None:
-            log.warning("Could not fetch equity (API timeout?) — skipping iteration.")
+            delay = backoff.failure()
+            log.warning("Could not fetch equity (API timeout?) — skipping iteration; "
+                        "failure #%d, retrying in %.0fs.", backoff.failures, delay)
+            _interruptible_sleep(delay)
             continue
+        if backoff.failures:
+            log.info("Equity fetch recovered after %d failed attempt(s).", backoff.failures)
+            backoff.reset()
         log.info("Equity: $%.2f | Positions: %d/%d | Halted: %s",
                  equity, risk.open_count, config.RISK.max_positions, risk.is_halted)
         risk.update_equity(equity)
@@ -361,13 +448,16 @@ def main() -> None:
         sleep_for = max(0.0, config.LOOP_INTERVAL - elapsed)
         log.debug("Iteration %d done in %.1fs. Sleeping %.1fs.", iteration, elapsed, sleep_for)
 
-        sleep_end = time.monotonic() + sleep_for
-        while time.monotonic() < sleep_end and not _shutdown_requested:
-            time.sleep(min(1.0, sleep_end - time.monotonic()))
+        _interruptible_sleep(sleep_for)
 
     # --- Shutdown ---
     log.info("Bot shutting down.")
-    _emergency_close_all(exchange, risk)
+    if config.CLOSE_ON_SHUTDOWN:
+        _emergency_close_all(market, exchange, risk)
+    elif risk.open_count:
+        log.warning("Leaving %d position(s) open (%s) — CLOSE_ON_SHUTDOWN is off; the next "
+                    "start re-adopts them. Until then nothing enforces their SL/TP.",
+                    risk.open_count, ", ".join(risk.open_coins))
     log.info("Bye.")
 
 

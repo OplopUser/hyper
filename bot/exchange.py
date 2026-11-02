@@ -340,10 +340,17 @@ class ExchangeClient:
         Each dict contains the raw SDK fields:
           coin, szi (signed size), entryPx, positionValue,
           unrealizedPnl, returnOnEquity, liquidationPx, marginUsed, leverage
+
+        Returns [] both when nothing is open and when the API call fails;
+        use get_positions_or_none() when those must be told apart.
         """
+        return self.get_positions_or_none() or []
+
+    def get_positions_or_none(self) -> Optional[List[dict]]:
+        """Like get_positions(), but returns None if the API call failed."""
         state = self.get_user_state()
         if not state:
-            return []
+            return None
         positions = []
         for asset_pos in state.get("assetPositions", []):
             pos = asset_pos.get("position", {})
@@ -352,7 +359,7 @@ class ExchangeClient:
         return positions
 
     def get_position(self, coin: str) -> Optional[dict]:
-        """Return the position dict for *coin*, or None if not open."""
+        """Return the position dict for *coin*, or None if not open (or the API call failed)."""
         for pos in self.get_positions():
             if pos.get("coin") == coin:
                 return pos

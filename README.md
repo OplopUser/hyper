@@ -27,9 +27,9 @@ A Python bot that trades [Hyperliquid](https://hyperliquid.xyz) perpetuals using
 
 ## Overview
 
-The bot runs a polling loop (every 60 seconds by default). On each iteration it reads account equity, then for every configured symbol it:
+The bot runs a polling loop (every 60 seconds by default). On each iteration it reads account equity (if that fails it backs off — 5 s, 10 s, 20 s … capped at 5 minutes — and resets after the next success), then for every configured symbol it:
 
-1. fetches the mid-price and checks any open position against its stop-loss / take-profit,
+1. fetches the mid-price, adopts any position open on the exchange that it isn't tracking yet (see [Restarts](#restarts-and-open-positions)), and checks the open position against its stop-loss / take-profit,
 2. runs pre-trade risk checks,
 3. pulls 15m candles plus 4h candles from the Hyperliquid Info API,
 4. evaluates the strategy on the last **closed** 15m candle,
@@ -44,7 +44,7 @@ All trading goes through an API (agent) wallet that signs on behalf of your main
 - **Risk controls:** fixed-fractional position sizing, margin cap, max concurrent positions, one position per coin, minimum order size, drawdown halt
 - **Multi-symbol:** trades every coin listed in `SYMBOLS`
 - **Signal de-duplication:** a closed candle can only produce one signal per symbol, so 60-second polling does not re-fire the same crossover
-- **Graceful shutdown:** `SIGINT` / `SIGTERM` finish the current iteration, then close every position the bot opened
+- **Restart-safe:** `SIGINT` / `SIGTERM` finish the current iteration and exit, leaving positions open; the next start re-adopts them (set `CLOSE_ON_SHUTDOWN=true` to flatten on exit instead)
 - **Backtester:** replays the same `compute_signal()` used live and writes `backtest_results.json`
 - **Dashboard:** Flask web UI with equity, open positions, fills, PnL stats, backtest results and a live log tail
 - **Structured logging:** `[SIGNAL]`, `[ORDER]`, `[POSITION]` and `[RISK]` events to the console and a rotating log file
@@ -96,6 +96,15 @@ That is a 2 : 1 reward-to-risk ratio measured from the candle close. The order f
 ### Exits
 
 In live trading a position is closed with a reduce-only market order when, on a loop iteration, the mid-price has reached the stop-loss or take-profit. The bot also stops tracking a position that is no longer open on the exchange (closed manually or liquidated). **Stops are enforced by the bot's polling loop, not by trigger orders resting on the exchange.**
+
+### Restarts and open positions
+
+By default (`CLOSE_ON_SHUTDOWN=false`) stopping or restarting the bot — including `docker compose restart` and Watchtower image updates — leaves open positions on the exchange. On each iteration, for every coin in `SYMBOLS`, the bot compares its tracked position with the exchange:
+
+- a position open on the exchange but not tracked (left by a restart, or opened by hand) is **adopted**: it counts toward `MAX_POSITIONS`, blocks a second entry on that coin, and gets a stop-loss / take-profit rebuilt from the exchange entry price and the ATR of the last closed candle (same 1.5× / 3.0× multipliers). Because the ATR is today's rather than the one at the original entry, the levels can differ from the ones the position was opened with; if price is already past one of them, the position is closed on that iteration;
+- if the positions query fails, or the SL/TP can't be computed (no candles), the bot opens nothing on that coin that iteration and tries again on the next.
+
+Positions on coins outside `SYMBOLS` are ignored. While the bot is down, nothing enforces the stops.
 
 ## Risk management
 
@@ -150,6 +159,7 @@ flowchart LR
 | `data/market.py` | Hyperliquid Info API: mid-prices, candles, L2 book, metadata, funding |
 | `data/reservoir.py` | Hydromancer Reservoir S3 reader (candles, fills, snapshots) |
 | `utils/logger.py` | Console and rotating-file logging, structured trade-event helpers |
+| `utils/backoff.py` | Capped exponential back-off used by the main loop |
 | `dashboard.py` | Flask dashboard and JSON API (`/api/all`, `/api/account`, `/api/fills`, `/api/logs`) |
 
 ## Requirements
@@ -192,6 +202,7 @@ In the Hyperliquid app (testnet: <https://app.hyperliquid-testnet.xyz>), generat
 | `MAX_RISK_PER_TRADE` | no | `0.02` | Fraction of equity risked per trade |
 | `MAX_POSITIONS` | no | `3` | Max concurrent positions |
 | `LOOP_INTERVAL` | no | `60` | Seconds between loop iterations |
+| `CLOSE_ON_SHUTDOWN` | no | `false` | `true` closes every tracked position on `SIGINT`/`SIGTERM` (old behaviour). `false` leaves them open for the next start to adopt |
 | `DASHBOARD_PORT` | no | `5050` | Dashboard port (`python dashboard.py` only; the compose file maps 5050) |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | no | — | Used only by `data/reservoir.py`; falls back to the default AWS credential chain |
 | `AWS_DEFAULT_REGION` | no | `us-east-1` | Region for the Reservoir S3 client |
@@ -208,7 +219,7 @@ All other parameters (RSI bounds, ATR multipliers, timeframes, filter settings, 
 python main.py
 ```
 
-It logs the active configuration, sets leverage on each symbol and starts the loop. Stop it with `Ctrl+C` (or `SIGTERM`): the bot finishes the current iteration and **closes all positions it opened** before exiting.
+It logs the active configuration, sets leverage on each symbol and starts the loop. Stop it with `Ctrl+C` (or `SIGTERM`): the bot finishes the current iteration and exits, **leaving open positions in place** for the next start to adopt. With `CLOSE_ON_SHUTDOWN=true` it closes them first.
 
 ```bash
 python main.py --backtest   # run the backtester first, then start live trading
@@ -297,7 +308,7 @@ and set `image: hyper` for both services. A plain `docker build` targets the hos
 
 Notes:
 
-- `docker compose stop`, `restart`, or an image update sends `SIGTERM` to the bot, and the bot **closes its open positions** on the way out.
+- `docker compose stop`, `restart`, or an image update sends `SIGTERM` to the bot. By default open positions stay open and the new container adopts them; set `CLOSE_ON_SHUTDOWN=true` to close them on the way out instead.
 - `backtest_results.json` is not mounted into the containers, so the dashboard's backtest panel stays empty under Compose unless you add a volume for it.
 - The dashboard has no authentication and listens on all interfaces. Keep port 5050 on a trusted network or behind a reverse proxy with auth.
 
@@ -319,7 +330,9 @@ hyper/
 │   ├── market.py                  # Hyperliquid Info API (live data)
 │   └── reservoir.py               # Hydromancer Reservoir S3 reader
 ├── utils/
-│   └── logger.py                  # Logging setup and trade-event helpers
+│   ├── logger.py                  # Logging setup and trade-event helpers
+│   └── backoff.py                 # Capped exponential back-off for API failures
+├── tests/                         # Offline unit tests (python -m unittest)
 ├── strategy_diagram.html          # Visual explainer of the strategy
 ├── trade_activation_diagram.html  # Visual flow from loop tick to order
 ├── requirements.txt
@@ -339,12 +352,11 @@ The two HTML diagrams open directly in a browser. `strategy_diagram.html` predat
 Known limitations:
 
 - **No exchange-side stops.** SL/TP are checked against the mid-price once per loop. Between checks, or while the bot is down, positions are unprotected, and gaps can fill well past the stop.
-- **State lives in memory.** Tracked positions, peak equity and the drawdown halt reset on restart. Positions left open before a restart are not managed by the new process; close them manually.
-- **Shutdown closes positions.** Any `SIGINT`/`SIGTERM` (including container restarts and image updates) flattens the positions the bot opened.
+- **State lives in memory.** Peak equity and the drawdown halt reset on restart. Open positions are re-adopted, but their SL/TP are rebuilt from the current ATR, not the original signal's.
 - **No exit on opposite signal in live trading.** Live positions close only via SL/TP. The backtester also exits on an opposite signal, so the two can diverge.
 - **Backtest is a rough check, not evidence of an edge.** It covers only about 200 recent 15m candles, ignores fees, slippage and funding, fills at candle closes, and evaluates the HTF trend filter on the latest 4h data for every bar (look-ahead). Don't read much into its numbers.
 - **Polling, not streaming.** The bot reacts on a 60-second cycle, not to tick data.
-- **Limited tests.** The repository has no automated test suite; CI only builds the Docker image.
+- **Limited tests.** `tests/` covers only the back-off and position adoption, offline (`python -m unittest discover -s tests -t .`); CI only builds the Docker image.
 - **Testnet ≠ mainnet.** Liquidity, slippage and fills differ.
 
 ## License

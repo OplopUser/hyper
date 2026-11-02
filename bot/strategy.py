@@ -341,3 +341,34 @@ def compute_signal(
         htf_trend=htf_trend, vol_regime=vol_regime,
         stop_loss=stop_loss, take_profit=take_profit,
     )
+
+
+def adopted_sl_tp(
+    df: pd.DataFrame,
+    direction: Direction,
+    entry_price: float,
+    cfg=None,
+) -> Optional[Signal]:
+    """
+    Rebuild SL/TP for a position that was already open when the bot started.
+
+    The original signal's ATR isn't persisted, so this uses the ATR of the
+    last closed candle and anchors the levels on the exchange's entry price
+    (same multipliers as compute_signal). Returns None if there isn't
+    enough candle data.
+    """
+    cfg = cfg or config.STRATEGY
+    if df.empty or direction == Direction.NONE:
+        return None
+    df = _compute_indicators(df.copy(), cfg).dropna(subset=["atr"])
+    if len(df) < 2:
+        return None
+    atr = float(df.iloc[-2]["atr"])
+    if atr <= 0:
+        return None
+    stop_loss, take_profit = _sl_tp(direction, entry_price, atr, cfg)
+    return Signal(
+        direction=direction,
+        atr=atr, close=entry_price,
+        stop_loss=stop_loss, take_profit=take_profit,
+    )
