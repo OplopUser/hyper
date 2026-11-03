@@ -41,11 +41,11 @@ All trading goes through an API (agent) wallet that signs on behalf of your main
 
 - **Strategy:** EMA(9/21) crossover, RSI(14) range filter, 4h EMA(21) trend filter, ATR-percentile volatility filter
 - **ATR-based exits:** stop-loss at 1.5 × ATR, take-profit at 3.0 × ATR
-- **Risk controls:** fixed-fractional position sizing, margin cap, max concurrent positions, one position per coin, minimum order size, drawdown halt
+- **Risk controls:** fixed-fractional position sizing (loss at the stop = 2 % of equity at any leverage), free-margin cap, max concurrent positions, one position per coin, minimum order size, drawdown halt
 - **Multi-symbol:** trades every coin listed in `SYMBOLS`
 - **Signal de-duplication:** a closed candle can only produce one signal per symbol, so 60-second polling does not re-fire the same crossover
 - **Restart-safe:** `SIGINT` / `SIGTERM` finish the current iteration and exit, leaving positions open; the next start re-adopts them (set `CLOSE_ON_SHUTDOWN=true` to flatten on exit instead)
-- **Backtester:** replays the same `compute_signal()` used live and writes `backtest_results.json`
+- **Backtester:** replays the same `compute_signal()` and sizing used live on closed candles only, fills at the next candle's open, charges taker fees, and writes `backtest_results.json`
 - **Dashboard:** Flask web UI with equity, open positions, fills, PnL stats, backtest results and a live log tail
 - **Structured logging:** `[SIGNAL]`, `[ORDER]`, `[POSITION]` and `[RISK]` events to the console and a rotating log file
 - **Deployment:** Dockerfile, `docker-compose.yml` (bot and dashboard as separate services) and a GitHub Actions workflow that builds and pushes a `linux/arm64` image to GHCR
@@ -80,7 +80,7 @@ At least 50 candles are needed before any signal is produced. The strategy looks
 
 - **RSI range:** the signal is dropped when RSI is at or below 30 or at or above 70 (`rsi_oversold` / `rsi_overbought`).
 - **HTF trend** (`htf_enabled = True`): the 4h close compared with the 4h EMA(21) gives `bullish` or `bearish`. Longs are blocked in a bearish trend and shorts in a bullish one. If the trend is `unknown` (not enough 4h data), the filter does not block.
-- **Volatility regime** (`vol_filter_enabled = True`): the current ATR is ranked against the last 100 ATR values. Below the 20th percentile is `low` (ranging) and above the 95th is `high` (news/chaos); both block the signal.
+- **Volatility regime** (`vol_filter_enabled = True`): the ATR of the last closed candle is ranked against the last 100 ATR values. Below the 20th percentile is `low` (ranging) and above the 95th is `high` (news/chaos); both block the signal.
 
 ### Stop-loss and take-profit
 
@@ -116,19 +116,21 @@ Implemented in [`bot/risk.py`](bot/risk.py). Defaults come from `RiskConfig` in 
 | Max concurrent positions | 3 | `MAX_POSITIONS` | New entries blocked at the limit |
 | One position per coin | always on | — | No pyramiding or adding to a position |
 | Drawdown halt | 10 % from peak | `config.py` only | Blocks new entries once equity falls 10 % below the peak seen since start-up. Open positions keep being managed. The halt lasts until the bot restarts. |
-| Leverage | 1× (cross) | `config.py` only | Set explicitly on every symbol at start-up |
+| Leverage | 1× (cross) | `config.py` only | Set explicitly on every symbol at start-up. Changes margin use, not risk (below) |
 | Minimum order | $10 notional | `config.py` only | Smaller orders are skipped |
 
 **Position sizing**
 
 ```
 risk_amount = equity × MAX_RISK_PER_TRADE
-size        = risk_amount / |entry − stop_loss|          (× leverage when leverage > 1)
-size        = min(size, equity × leverage × 0.95 / entry)  # margin cap, 5 % buffer
+size        = risk_amount / |entry − stop_loss|
+size        = min(size, free_margin × leverage × 0.95 / entry)   # margin cap, 5 % buffer
 size        = floor(size, exchange size decimals)
 ```
 
-The margin cap means that with tight stops the actual risk can be **lower** than 2 %. When leverage is above 1, the size is multiplied by the leverage, so the risk per trade becomes roughly leverage × `MAX_RISK_PER_TRADE`.
+The size is chosen so that a fill at the stop loses `MAX_RISK_PER_TRADE` of equity (2 % by default). **Leverage does not scale it**: the loss at the stop is `size × |entry − stop|`, whatever the leverage. Leverage only sets how much margin the position ties up (`notional / leverage`), so its one effect on sizing is to raise the cap.
+
+`free_margin` is the account's `withdrawable` balance (equity not already used as margin by other positions); if it can't be fetched, the bot skips the entry. With tight stops the cap can bind, and the trade then risks **less** than 2 %. Example: $1,000 equity, ETH at $2,000, stop 0.5 % away ($10). The risk budget is $20, so the uncapped size is 2 ETH ($4,000 notional). At 1× the cap is $950 notional (0.475 ETH, $4.75 at risk); at 5× the cap is $4,750 and the full 2 ETH ($20 at risk) fits. Fees and slippage past the stop come on top.
 
 ## Architecture
 
@@ -204,10 +206,11 @@ In the Hyperliquid app (testnet: <https://app.hyperliquid-testnet.xyz>), generat
 | `LOOP_INTERVAL` | no | `60` | Seconds between loop iterations |
 | `CLOSE_ON_SHUTDOWN` | no | `false` | `true` closes every tracked position on `SIGINT`/`SIGTERM` (old behaviour). `false` leaves them open for the next start to adopt |
 | `DASHBOARD_PORT` | no | `5050` | Dashboard port (`python dashboard.py` only; the compose file maps 5050) |
+| `DASHBOARD_HOST` | no | `0.0.0.0` | Dashboard bind address; `127.0.0.1` for local-only |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | no | — | Used only by `data/reservoir.py`; falls back to the default AWS credential chain |
 | `AWS_DEFAULT_REGION` | no | `us-east-1` | Region for the Reservoir S3 client |
 
-All other parameters (RSI bounds, ATR multipliers, timeframes, filter settings, drawdown halt, leverage, minimum order) are edited directly in `config.py`.
+All other parameters (RSI bounds, ATR multipliers, timeframes, filter settings, drawdown halt, leverage, minimum order, backtest fee) are edited directly in `config.py`.
 
 `.env` is listed in `.gitignore` and `.dockerignore`. Never commit it.
 
@@ -228,17 +231,23 @@ python main.py --backtest   # run the backtester first, then start live trading
 ### Backtesting
 
 ```bash
-python -m bot.backtest            # symbols from SYMBOLS
-python -m bot.backtest ETH SOL    # specific symbols
+python -m bot.backtest                          # SYMBOLS, last 30 days
+python -m bot.backtest ETH SOL --days 14        # specific symbols and window
+python -m bot.backtest --taker-fee 0.0003       # your fee tier (default 0.00045)
+python -m bot.backtest --equity 5000 --no-save  # starting equity; don't write JSON
+USE_TESTNET=false python -m bot.backtest        # mainnet candles (public, no keys)
 ```
 
-The backtester needs no wallet keys. It downloads recent candles from the Hyperliquid candle endpoint (the configured lookback: 200 × 15m candles, about two days), then:
+The backtester needs no wallet keys; it only reads the public candle endpoint of the network selected by `USE_TESTNET`. Testnet prices are thin and often unlike mainnet, so use `USE_TESTNET=false` for meaningful numbers. It downloads the last `--days` days of closed 15m and 4h candles plus indicator warm-up, then, bar by bar with $1,000 starting equity (`--equity`):
 
-- replays `compute_signal()` bar by bar with $1,000 starting equity,
-- sizes trades with `MAX_RISK_PER_TRADE` and the minimum-order rule,
-- exits on SL/TP (checked against each bar's high/low and filled at the level), on an opposite signal, or at the end of the data,
-- prints trades, win rate, total PnL, max drawdown, Sharpe ratio (annualised assuming 15m bars), average win/loss and profit factor,
+- **decides from closed candles only.** At bar *i* it calls the live `compute_signal()` with bars up to *i − 1*; the 4h trend filter sees only 4h candles that had closed by bar *i*'s open, plus a forming 4h candle priced at that open (what the live bot sees when it polls),
+- **enters at bar *i*'s open**, with the signal's SL/TP and the same `RiskManager` sizing as live trading (so `MAX_RISK_PER_TRADE`, the leverage cap, size decimals and the minimum order all apply),
+- exits, like the live bot, only on SL/TP, checked against each bar's high/low including the entry bar (if both are touched in one bar the stop is assumed first; a bar that opens past a level fills at the open), or at the last close. While a position is open no new signal is evaluated for that coin, so an opposite crossover neither closes nor reverses it,
+- charges the **taker fee** (`--taker-fee`, default `BACKTEST_TAKER_FEE` = 0.045 %, Hyperliquid's base perps tier) on the notional of every entry and exit; reported PnL is net of fees,
+- prints trades, win rate, net PnL, fees, max drawdown (mark-to-market), Sharpe ratio (annualised for the candle interval), average win/loss and profit factor,
 - saves everything to `backtest_results.json`, which the dashboard displays.
+
+Hyperliquid's candle endpoint returns at most the 5,000 most recent candles per interval (about 52 days of 15m candles), so a longer `--days` is cut short; the printed period shows what was actually tested.
 
 See [Risks & limitations](#risks--limitations) for what the simulation leaves out.
 
@@ -248,7 +257,7 @@ See [Risks & limitations](#risks--limitations) for what the simulation leaves ou
 python dashboard.py
 ```
 
-Serves on `http://localhost:5050` (or `DASHBOARD_PORT`) and refreshes every 5 seconds. It shows account equity, unrealised PnL, margin used, withdrawable balance, open positions with mark and liquidation prices, the last fills with closed PnL and fees, win-rate stats, a cumulative-PnL sparkline, backtest results and the tail of `logs/bot.log`. A badge shows whether it is pointed at **TESTNET** or **MAINNET**. It is read-only and needs only `ACCOUNT_ADDRESS`, not the private key.
+Serves on port 5050 (`DASHBOARD_PORT`) on all interfaces (`DASHBOARD_HOST`, default `0.0.0.0` for Docker; set `127.0.0.1` to keep it local) and refreshes every 5 seconds. It shows account equity, unrealised PnL, margin used, withdrawable balance, open positions with mark and liquidation prices, the last fills with closed PnL and fees, win-rate stats, a cumulative-PnL sparkline, backtest results and the tail of `logs/bot.log`. A badge shows whether it is pointed at **TESTNET** or **MAINNET**. It is read-only and needs only `ACCOUNT_ADDRESS`, not the private key. Without `ACCOUNT_ADDRESS` it still starts and shows backtest results and logs, with the account panels empty.
 
 ### Logs
 
@@ -312,7 +321,12 @@ Notes:
 - `backtest_results.json` is not mounted into the containers, so the dashboard's backtest panel stays empty under Compose unless you add a volume for it.
 - The dashboard has no authentication and listens on all interfaces. Keep port 5050 on a trusted network or behind a reverse proxy with auth.
 
-[`watchdog.sh`](watchdog.sh) is an older non-Docker alternative: it starts `main.py` and `dashboard.py` and restarts either one if it dies (checked every 30 seconds). The interpreter path at the top of the script is machine-specific; edit it before use.
+[`watchdog.sh`](watchdog.sh) is a non-Docker alternative: it starts `main.py` and `dashboard.py` and restarts either one if it dies (checked every 30 seconds). It uses `$PYTHON` if set, otherwise `.venv/` or `venv/` next to the script, otherwise `python3` from `PATH`:
+
+```bash
+nohup ./watchdog.sh &                          # auto-detect the interpreter
+PYTHON=/path/to/python nohup ./watchdog.sh &   # or pick one
+```
 
 ## Project structure
 
@@ -343,7 +357,7 @@ hyper/
 └── .github/workflows/build-and-push.yml
 ```
 
-The two HTML diagrams open directly in a browser. `strategy_diagram.html` predates the HTF and volatility filters and still mentions BTC and Reservoir as the live data source; this README and the code are authoritative.
+The two HTML diagrams open directly in a browser. They show the default parameters from `config.py`; if you change those, the code is authoritative.
 
 ## Risks & limitations
 
@@ -353,10 +367,10 @@ Known limitations:
 
 - **No exchange-side stops.** SL/TP are checked against the mid-price once per loop. Between checks, or while the bot is down, positions are unprotected, and gaps can fill well past the stop.
 - **State lives in memory.** Peak equity and the drawdown halt reset on restart. Open positions are re-adopted, but their SL/TP are rebuilt from the current ATR, not the original signal's.
-- **No exit on opposite signal in live trading.** Live positions close only via SL/TP. The backtester also exits on an opposite signal, so the two can diverge.
-- **Backtest is a rough check, not evidence of an edge.** It covers only about 200 recent 15m candles, ignores fees, slippage and funding, fills at candle closes, and evaluates the HTF trend filter on the latest 4h data for every bar (look-ahead). Don't read much into its numbers.
+- **No exit on opposite signal.** Positions close only via SL/TP (live and in the backtest); an opposite crossover while a position is open is ignored.
+- **Backtest is a rough check, not evidence of an edge.** It avoids look-ahead and charges taker fees, but it ignores slippage, funding and liquidity, assumes stops fill exactly at the level (or the bar's open on a gap), counts a bar that touches both SL and TP as a loss, and runs each symbol on its own (no shared equity or `MAX_POSITIONS` limit). Live stops are checked once per loop against the mid-price, so live fills differ. A month of 15m data is a small sample.
 - **Polling, not streaming.** The bot reacts on a 60-second cycle, not to tick data.
-- **Limited tests.** `tests/` covers only the back-off and position adoption, offline (`python -m unittest discover -s tests -t .`); CI only builds the Docker image.
+- **Limited tests.** `tests/` covers the back-off, position adoption, position sizing and the backtester (look-ahead, fees, `--days`) on synthetic data, offline (`python -m unittest discover -s tests -t .`). Exchange calls are not tested against a live API, and CI only builds the Docker image.
 - **Testnet ≠ mainnet.** Liquidity, slippage and fills differ.
 
 ## License

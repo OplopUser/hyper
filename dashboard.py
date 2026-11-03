@@ -16,7 +16,6 @@ Auto-refreshes every 5 seconds via JavaScript polling.
 
 from __future__ import annotations
 
-import os
 import re
 import json
 from datetime import datetime, timezone
@@ -32,9 +31,10 @@ import config  # loads .env; single source for USE_TESTNET / API URL
 # ── Config ────────────────────────────────────────────────────────────────────
 USE_TESTNET = config.USE_TESTNET
 BASE_URL    = config.HYPERLIQUID_API_URL
-ADDRESS     = os.getenv("ACCOUNT_ADDRESS", "")
+ADDRESS     = config.get_account_address_optional()
 LOG_FILE    = Path(__file__).parent / "logs" / "bot.log"
-DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", 5050))
+DASHBOARD_HOST = config.DASHBOARD_HOST
+DASHBOARD_PORT = config.DASHBOARD_PORT
 
 app = Flask(__name__)
 info = Info(base_url=BASE_URL, skip_ws=True)
@@ -43,6 +43,10 @@ info = Info(base_url=BASE_URL, skip_ws=True)
 
 def get_account() -> dict:
     """Fetch account equity, margin, positions."""
+    if not ADDRESS:
+        return {"error": "ACCOUNT_ADDRESS is not set — account data unavailable",
+                "positions": [], "equity": 0, "margin_used": 0, "unrealised": 0,
+                "withdrawable": 0}
     try:
         state = info.user_state(ADDRESS)
         summary = state.get("marginSummary", {})
@@ -80,6 +84,8 @@ def get_account() -> dict:
 
 def get_fills(n: int = 50) -> list:
     """Fetch recent fills (closed trades) for the account."""
+    if not ADDRESS:
+        return []
     try:
         raw = info.user_fills(ADDRESS)
         fills = []
@@ -180,7 +186,7 @@ def api_all():
         "logs":    logs,
         "mids":    mids,
         "backtest": backtest,
-        "symbols": os.getenv("SYMBOLS", os.getenv("SYMBOL", "ETH,SOL")).split(","),
+        "symbols": config.SYMBOLS,
         "ts":      datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
         "network": "TESTNET" if USE_TESTNET else "MAINNET",
         "address": ADDRESS[:6] + "..." + ADDRESS[-4:] if ADDRESS else "n/a",
@@ -683,7 +689,7 @@ def index():
 
 
 if __name__ == "__main__":
-    print(f"\n  📊 Dashboard → http://localhost:{DASHBOARD_PORT}")
+    print(f"\n  📊 Dashboard → http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
     print(f"  Network : {'TESTNET' if USE_TESTNET else 'MAINNET'}")
     print(f"  Address : {ADDRESS[:10]}...{ADDRESS[-4:] if len(ADDRESS) > 14 else ''}\n")
-    app.run(host="0.0.0.0", port=DASHBOARD_PORT, debug=False)
+    app.run(host=DASHBOARD_HOST, port=DASHBOARD_PORT, debug=False)

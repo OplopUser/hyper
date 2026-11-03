@@ -149,12 +149,18 @@
   .dot-yellow { background: #e3b341; }
   .dot-purple { background: #bc8cff; }
   .dot-red    { background: #f78166; }
+
+  @media (max-width: 720px) {
+    body { padding: 24px 16px; }
+    .cards { grid-template-columns: 1fr !important; }
+    .flow-row { flex-wrap: wrap; }
+  }
 </style>
 </head>
 <body>
 
-<h1>EMA Crossover + RSI Filter Strategy</h1>
-<p class="subtitle">Hyperliquid Perpetuals Bot — BTC/USD · 15m candles · Every 60s</p>
+<h1>EMA Crossover Strategy — RSI, 4h Trend &amp; Volatility Filters</h1>
+<p class="subtitle">Hyperliquid Perpetuals Bot — every coin in SYMBOLS (default ETH, SOL) · 15m candles · polled every 60s</p>
 
 <!-- ═══════════════════════════════════════════════════════ -->
 <!-- FLOW DIAGRAM -->
@@ -166,13 +172,13 @@
 
     <!-- Step 1: Data -->
     <div class="flow-row">
-      <div class="node node-data">📡 Fetch candles<br><small style="color:#484f58">Reservoir S3 → live fallback</small></div>
+      <div class="node node-data">📡 Fetch candles<br><small style="color:#484f58">Hyperliquid Info API · 15m × 200 + 4h × 100</small></div>
     </div>
     <div class="flow-row"><div class="arrow">↓</div></div>
 
     <!-- Step 2: Indicators -->
     <div class="flow-row">
-      <div class="node node-data">📐 Compute indicators<br><small style="color:#484f58">EMA(9) · EMA(21) · RSI(14) · ATR(14)</small></div>
+      <div class="node node-data">📐 Compute indicators<br><small style="color:#484f58">EMA(9) · EMA(21) · RSI(14) · ATR(14) · last closed candle</small></div>
     </div>
     <div class="flow-row"><div class="arrow">↓</div></div>
 
@@ -212,15 +218,49 @@
       </div>
     </div>
 
+    <!-- Step 4b: HTF trend filter -->
+    <div class="flow-row">
+      <div class="node node-filter">🧭 4h trend agrees?<br><small style="color:#484f58">Long not in a bearish 4h trend · short not in a bullish one</small></div>
+    </div>
+
+    <div class="flow-row" style="justify-content:center; gap:60px; width:100%;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+        <div class="arrow">↓</div>
+        <span class="label-yes">YES</span>
+      </div>
+      <div style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:20px">
+        <span class="label-no">NO</span>
+        <div class="arrow-side">→</div>
+        <div class="node node-none">🚫 Blocked<br>Counter-trend</div>
+      </div>
+    </div>
+
+    <!-- Step 4c: Volatility filter -->
+    <div class="flow-row">
+      <div class="node node-filter">🌡️ Volatility normal?<br><small style="color:#484f58">ATR between p20 and p95 of last 100</small></div>
+    </div>
+
+    <div class="flow-row" style="justify-content:center; gap:60px; width:100%;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+        <div class="arrow">↓</div>
+        <span class="label-yes">YES</span>
+      </div>
+      <div style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:20px">
+        <span class="label-no">NO</span>
+        <div class="arrow-side">→</div>
+        <div class="node node-none">🚫 Blocked<br>Too quiet / too wild</div>
+      </div>
+    </div>
+
     <!-- Step 5: Risk checks -->
     <div class="flow-row">
-      <div class="node node-risk">🛡️ Risk checks<br><small style="color:#484f58">Max positions · Equity · SL/TP valid</small></div>
+      <div class="node node-risk">🛡️ Risk checks<br><small style="color:#484f58">Drawdown halt · max 3 positions · 1 per coin · SL/TP valid</small></div>
     </div>
     <div class="flow-row"><div class="arrow">↓</div></div>
 
     <!-- Step 6: Size -->
     <div class="flow-row">
-      <div class="node node-risk">📏 Size position<br><small style="color:#484f58">2% equity risk ÷ price distance to SL</small></div>
+      <div class="node node-risk">📏 Size position<br><small style="color:#484f58">2% of equity ÷ distance to SL · capped by free margin × leverage</small></div>
     </div>
     <div class="flow-row"><div class="arrow">↓</div></div>
 
@@ -234,7 +274,7 @@
 
     <!-- Step 8: Monitor -->
     <div class="flow-row">
-      <div class="node node-exit">👁️ Monitor every 60s<br><small style="color:#484f58">Check SL / TP hit → close position</small></div>
+      <div class="node node-exit">👁️ Monitor every 60s<br><small style="color:#484f58">Mid-price hit SL / TP → reduce-only market close</small></div>
     </div>
 
   </div>
@@ -252,7 +292,7 @@
       <strong>Slow EMA (21)</strong> shows the trend.<br><br>
       🟢 Fast crosses <strong>above</strong> Slow → Long<br>
       🔴 Fast crosses <strong>below</strong> Slow → Short<br><br>
-      Only triggers on the <strong>candle the cross occurs</strong> — no lag entries.
+      Checked on the <strong>last closed candle</strong>; each closed candle can signal only once.
     </p>
   </div>
 
@@ -271,13 +311,34 @@
     <div class="card-title purple">ATR (14) — SL &amp; TP</div>
     <p>
       Sizes stop-loss &amp; take-profit to <strong>current volatility</strong>.<br><br>
-      <strong>Stop-loss</strong> = 1.5 × ATR from entry<br>
-      <strong>Take-profit</strong> = 3.0 × ATR from entry<br><br>
-      Risk/reward ratio: <strong>1 : 2</strong> minimum.<br>
+      <strong>Stop-loss</strong> = 1.5 × ATR from the signal close<br>
+      <strong>Take-profit</strong> = 3.0 × ATR from the signal close<br><br>
+      Reward : risk <strong>2 : 1</strong> from that close (entry is the mid-price, so it varies slightly).<br>
       Wide markets get wider stops automatically.
     </p>
   </div>
 
+</div>
+
+<div class="cards" style="grid-template-columns: repeat(2,1fr);">
+  <div class="card">
+    <div class="card-title orange">4h Trend Filter</div>
+    <p>
+      4h close vs <strong>4h EMA(21)</strong>.<br><br>
+      Above → <strong>bullish</strong>: shorts blocked<br>
+      Below → <strong>bearish</strong>: longs blocked<br>
+      Too little 4h data → <strong>unknown</strong>: nothing blocked
+    </p>
+  </div>
+  <div class="card">
+    <div class="card-title orange">Volatility Filter</div>
+    <p>
+      Current ATR ranked against the <strong>last 100</strong> ATR values.<br><br>
+      Below <strong>20th percentile</strong> → ranging, skip<br>
+      Above <strong>95th percentile</strong> → news / chaos, skip<br>
+      In between → trade OK
+    </p>
+  </div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ -->
@@ -337,9 +398,11 @@
     <p>
       <strong>Formula:</strong><br>
       Size = (Equity × 2%) ÷ |Entry − Stop Loss|<br><br>
-      If equity = $1,000 and SL is $200 away:<br>
-      Size = $20 ÷ $200 = <strong>0.1 BTC</strong><br><br>
-      Max loss per trade: <strong>$20 (2% of equity)</strong>
+      Equity $1,000, ETH at $2,000, SL $50 away:<br>
+      Size = $20 ÷ $50 = <strong>0.4 ETH</strong> ($800 notional)<br><br>
+      Loss at the stop: <strong>$20 (2% of equity)</strong> at any leverage —
+      leverage only lowers the margin used. Size is capped at
+      free margin × leverage × 95%, so very tight stops risk less.
     </p>
   </div>
   <div class="card">
@@ -349,7 +412,7 @@
       🔴 <strong>10% drawdown</strong> halts all new trades<br>
       🔴 Only <strong>1 position per coin</strong> at a time<br>
       🔴 Minimum order <strong>$10 notional</strong><br>
-      🔴 Emergency close all on <strong>shutdown</strong>
+      🔴 Restart keeps positions and <strong>re-adopts</strong> them (CLOSE_ON_SHUTDOWN=true closes instead)
     </p>
   </div>
 </div>
@@ -357,7 +420,7 @@
 <div class="legend" style="margin-top:8px;">
   <div class="legend-item"><div class="dot dot-blue"></div> Data / Indicators</div>
   <div class="legend-item"><div class="dot dot-green"></div> Signal / Long</div>
-  <div class="legend-item"><div class="dot dot-yellow"></div> RSI Filter</div>
+  <div class="legend-item"><div class="dot dot-yellow"></div> Filters</div>
   <div class="legend-item"><div class="dot dot-purple"></div> Risk Management</div>
   <div class="legend-item"><div class="dot dot-red"></div> Orders / Stop-Loss</div>
 </div>

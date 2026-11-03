@@ -333,6 +333,21 @@ class ExchangeClient:
             log.error("Could not parse accountValue: %s", exc)
             return None
 
+    def get_available_margin(self) -> Optional[float]:
+        """
+        Return the margin free for a new position (the account's
+        ``withdrawable``: equity not already tied up as margin), or None if
+        the API call fails.
+        """
+        state = self.get_user_state()
+        if not state:
+            return None
+        try:
+            return float(state["withdrawable"])
+        except (KeyError, TypeError, ValueError) as exc:
+            log.error("Could not parse withdrawable: %s", exc)
+            return None
+
     def get_positions(self) -> List[dict]:
         """
         Return all open perpetual positions as a list of dicts.

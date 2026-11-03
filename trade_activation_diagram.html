@@ -97,7 +97,8 @@
   <!-- 3. EXISTING POSITION -->
   <div class="node node-process">
     <div class="node-title">Manage Existing Positions</div>
-    <div class="node-desc">Check if any open position hit stop-loss or take-profit &rarr; close if triggered</div>
+    <div class="node-desc">Reconcile with the exchange (adopt an untracked position, e.g. after a restart), then close with a reduce-only market order if the mid-price hit stop-loss or take-profit</div>
+    <div class="reject-label">Positions query fails &rarr; skip symbol</div>
   </div>
 
   <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
@@ -140,7 +141,7 @@
     <div class="node-desc">
       EMA Fast <span class="config">9</span> &bull; EMA Slow <span class="config">21</span> &bull; RSI <span class="config">14</span> &bull; ATR <span class="config">14</span>
     </div>
-    <div class="node-detail">Requires &ge; 50 candles and &ge; 2 valid indicator rows</div>
+    <div class="node-detail">Requires &ge; 50 candles &bull; evaluated on the last <strong>closed</strong> candle (the forming one is ignored) &bull; one signal per closed candle</div>
   </div>
 
   <div class="connector"><div class="connector-wrap"><div class="line"></div><div class="arrow"></div></div></div>
@@ -175,7 +176,8 @@
       <div class="node-title">Filter 2: HTF Trend Alignment</div>
       <div class="node-desc">
         4h EMA(<span class="config">21</span>) determines trend<br>
-        <strong>LONG</strong> only if trend = bullish &bull; <strong>SHORT</strong> only if trend = bearish
+        Bullish if 4h close &gt; EMA, bearish if below<br>
+        <strong>LONG</strong> blocked if bearish &bull; <strong>SHORT</strong> blocked if bullish &bull; unknown (too little data) &rarr; no block
       </div>
       <div class="reject-label">Counter-trend &rarr; blocked</div>
     </div>
@@ -186,12 +188,12 @@
     <div class="node node-filter">
       <div class="node-title">Filter 3: Volatility Regime</div>
       <div class="node-desc">
-        ATR percentile over last 100 candles<br>
+        Last closed candle's ATR ranked against the last 100 ATR values<br>
         &bull; Low (&lt; <span class="config">20th %ile</span>): ranging &rarr; block<br>
         &bull; High (&gt; <span class="config">95th %ile</span>): chaos &rarr; block<br>
         &bull; Normal: allow
       </div>
-      <div class="reject-label">Extreme volatility &rarr; blocked</div>
+      <div class="reject-label">Too quiet or too wild &rarr; blocked</div>
     </div>
   </div>
 
@@ -203,8 +205,9 @@
   <div class="node node-signal">
     <div class="node-title">Compute SL / TP</div>
     <div class="node-desc">
-      <strong>LONG:</strong> SL = entry &minus; ATR &times; <span class="config">1.5</span> &nbsp;|&nbsp; TP = entry + ATR &times; <span class="config">3.0</span><br>
-      <strong>SHORT:</strong> SL = entry + ATR &times; <span class="config">1.5</span> &nbsp;|&nbsp; TP = entry &minus; ATR &times; <span class="config">3.0</span>
+      <strong>LONG:</strong> SL = close &minus; ATR &times; <span class="config">1.5</span> &nbsp;|&nbsp; TP = close + ATR &times; <span class="config">3.0</span><br>
+      <strong>SHORT:</strong> SL = close + ATR &times; <span class="config">1.5</span> &nbsp;|&nbsp; TP = close &minus; ATR &times; <span class="config">3.0</span><br>
+      <span style="color:#64748b">close / ATR of the signal candle; entry is the current mid-price</span>
     </div>
   </div>
 
@@ -225,9 +228,10 @@
   <div class="node node-risk">
     <div class="node-title">Compute Position Size</div>
     <div class="node-desc">
-      size = (equity &times; <span class="config">2% risk</span> &times; <span class="config">1x leverage</span>) / |entry &minus; SL|
+      size = (equity &times; <span class="config">2% risk</span>) / |entry &minus; SL| &nbsp;&rarr;&nbsp; loss at the stop = 2% of equity<br>
+      capped at free margin &times; <span class="config">1x leverage</span> &times; 95% / entry
     </div>
-    <div class="node-detail">Rounded to exchange decimals, notional &ge; $10 min order</div>
+    <div class="node-detail">Leverage only changes the margin a position ties up, not its size &bull; rounded down to exchange decimals &bull; notional &ge; $10 min order</div>
     <div class="reject-label">Below minimum &rarr; skip</div>
   </div>
 

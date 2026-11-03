@@ -214,9 +214,13 @@ def compute_signal(
     htf_df: Optional[pd.DataFrame] = None,
     symbol: str = "",
     cfg=None,
+    dedupe: bool = True,
 ) -> Signal:
     """
     Evaluate the full strategy on candle data with all filters.
+
+    The last row of *df* is treated as the still-forming candle and never
+    read: every decision uses closed candles only (df.iloc[:-1]).
 
     Parameters
     ----------
@@ -224,6 +228,9 @@ def compute_signal(
     htf_df  : Higher timeframe OHLCV DataFrame (e.g. 4h). Optional.
     symbol  : Coin symbol for logging.
     cfg     : StrategyConfig instance.
+    dedupe  : Skip a closed bar this symbol already produced a signal on
+              (live polling). The backtester visits each bar once and
+              passes False so runs don't share state.
 
     Returns
     -------
@@ -262,7 +269,7 @@ def compute_signal(
     # symbol, return no-signal without re-running the filters.
     curr_ts = curr.get("timestamp") if "timestamp" in curr else None
     last_ts = _last_signal_bar.get(symbol)
-    if curr_ts is not None and last_ts is not None and curr_ts == last_ts:
+    if dedupe and curr_ts is not None and last_ts is not None and curr_ts == last_ts:
         log.debug("[%s] Already evaluated bar %s — skipping", symbol, curr_ts)
         return Signal(
             direction=Direction.NONE,
@@ -280,7 +287,8 @@ def compute_signal(
     # --- Volatility filter ---
     vol_regime = "normal"
     if cfg.vol_filter_enabled:
-        vol_regime = compute_vol_regime(df, cfg)
+        # Closed candles only — the forming candle's ATR moves intra-bar.
+        vol_regime = compute_vol_regime(df.iloc[:-1], cfg)
         log.debug("[%s] Vol regime: %s (ATR=%.4f)", symbol, vol_regime, atr)
 
     # Build a "no signal" template with current indicator values
@@ -322,7 +330,7 @@ def compute_signal(
     stop_loss, take_profit = _sl_tp(direction, close, atr, cfg)
 
     # Mark this bar as signaled so we don't re-emit on the next poll
-    if curr_ts is not None:
+    if dedupe and curr_ts is not None:
         _last_signal_bar[symbol] = curr_ts
 
     log_signal(

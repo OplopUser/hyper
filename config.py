@@ -72,6 +72,10 @@ def get_account_address() -> str:
     """Main wallet address that holds funds. Info queries use this address."""
     return _require_env("ACCOUNT_ADDRESS")
 
+def get_account_address_optional() -> str:
+    """ACCOUNT_ADDRESS, or "" if unset (the read-only dashboard runs without it)."""
+    return os.getenv("ACCOUNT_ADDRESS", "").strip()
+
 # ---------------------------------------------------------------------------
 # AWS / Reservoir
 # ---------------------------------------------------------------------------
@@ -165,6 +169,15 @@ class RiskConfig:
 
 
 # ---------------------------------------------------------------------------
+# Backtest
+# ---------------------------------------------------------------------------
+
+# Taker fee charged on each fill's notional (entry and exit are both market
+# orders). 0.045 % is Hyperliquid's base-tier perps taker rate; volume tiers
+# and staking discounts lower it. Override with `--taker-fee`.
+BACKTEST_TAKER_FEE: float = 0.00045
+
+# ---------------------------------------------------------------------------
 # Bot loop
 # ---------------------------------------------------------------------------
 
@@ -180,6 +193,14 @@ ERROR_BACKOFF_MAX: float = 300.0
 # restart (docker restart, Watchtower image update) leaves positions open;
 # the next process re-adopts them on start-up.
 CLOSE_ON_SHUTDOWN: bool = _env_bool("CLOSE_ON_SHUTDOWN", default=False)
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+
+# 0.0.0.0 so the Docker port mapping works; use 127.0.0.1 for local-only.
+DASHBOARD_HOST: str = os.getenv("DASHBOARD_HOST", "0.0.0.0")
+DASHBOARD_PORT: int = _env_int("DASHBOARD_PORT", 5050)
 
 # ---------------------------------------------------------------------------
 # Convenience singletons (imported directly by other modules)

@@ -52,6 +52,7 @@ class RiskManager:
     def __init__(self, risk_cfg=None) -> None:
         self._cfg = risk_cfg or config.RISK
         self._peak_equity: float = 0.0
+        self._last_equity: float = 0.0
         self._trading_halted: bool = False
         self._positions: List[PositionRecord] = []
 
@@ -65,23 +66,36 @@ class RiskManager:
         entry_price: float,
         stop_loss_price: float,
         sz_decimals: int = 3,
+        available_margin: Optional[float] = None,
     ) -> float:
         """
         Compute how many units to trade so that hitting the stop-loss
-        costs at most `max_risk_per_trade` of current equity.
+        costs `max_risk_per_trade` of current equity — no more, whatever
+        the leverage.
 
         Formula:
           risk_amount  = equity × max_risk_per_trade
           price_risk   = |entry_price - stop_loss_price|
           raw_size     = risk_amount / price_risk
-          size         = floor(raw_size, sz_decimals)
+          max_size     = available_margin × leverage × 0.95 / entry_price
+          size         = floor(min(raw_size, max_size), sz_decimals)
+
+        Leverage does not scale the size: the loss at the stop is
+        size × price_risk, which is fixed by the risk budget. Leverage only
+        changes how much margin the position ties up (notional / leverage),
+        so its one effect here is to raise the margin cap. With tight stops
+        and low leverage the cap can bind, and the trade then risks *less*
+        than max_risk_per_trade.
 
         Parameters
         ----------
-        account_equity  : Total account value in USD.
-        entry_price     : Estimated fill price (e.g. current mid-price).
-        stop_loss_price : Price at which the stop-loss is placed.
-        sz_decimals     : Exchange's required size precision.
+        account_equity   : Total account value in USD (sets the risk budget).
+        entry_price      : Estimated fill price (e.g. current mid-price).
+        stop_loss_price  : Price at which the stop-loss is placed.
+        sz_decimals      : Exchange's required size precision.
+        available_margin : Margin free for a new position (e.g. the
+                           exchange's ``withdrawable``). Defaults to
+                           account_equity, i.e. nothing else is open.
 
         Returns
         -------
@@ -89,6 +103,9 @@ class RiskManager:
         """
         if account_equity <= 0:
             log.warning("compute_position_size: account_equity=%f, returning 0", account_equity)
+            return 0.0
+        if entry_price <= 0:
+            log.warning("compute_position_size: entry_price=%f, returning 0", entry_price)
             return 0.0
 
         risk_amount = account_equity * self._cfg.max_risk_per_trade
@@ -100,22 +117,19 @@ class RiskManager:
 
         raw_size = risk_amount / price_risk
 
-        # Apply leverage if configured
-        if self._cfg.leverage and self._cfg.leverage > 1:
-            raw_size *= self._cfg.leverage
-
-        # Cap by available margin so we never try to open a position larger
-        # than equity × leverage. Leave a 5% buffer for fees and IOC slippage.
+        # Cap by the margin actually free for this trade: at most
+        # margin × leverage of notional. Leave a 5% buffer for fees and IOC
+        # slippage.
         leverage = max(self._cfg.leverage or 1, 1)
-        max_notional = account_equity * leverage * 0.95
-        if entry_price > 0:
-            max_size_by_margin = max_notional / entry_price
-            if raw_size > max_size_by_margin:
-                log.info(
-                    "Size capped by margin: %.6f → %.6f (equity=$%.2f lev=%dx)",
-                    raw_size, max_size_by_margin, account_equity, leverage,
-                )
-                raw_size = max_size_by_margin
+        margin = account_equity if available_margin is None else max(available_margin, 0.0)
+        max_notional = margin * leverage * 0.95
+        max_size_by_margin = max_notional / entry_price
+        if raw_size > max_size_by_margin:
+            log.info(
+                "Size capped by margin: %.6f → %.6f (margin=$%.2f lev=%dx)",
+                raw_size, max_size_by_margin, margin, leverage,
+            )
+            raw_size = max_size_by_margin
 
         # Round down to exchange precision
         size = math.floor(raw_size * 10**sz_decimals) / 10**sz_decimals
@@ -130,8 +144,10 @@ class RiskManager:
             return 0.0
 
         log.debug(
-            "Position size: equity=$%.2f risk=$%.2f price_risk=%.4f → size=%.6f (notional=$%.2f)",
+            "Position size: equity=$%.2f risk=$%.2f price_risk=%.4f → size=%.6f "
+            "(notional=$%.2f, margin=$%.2f at %dx)",
             account_equity, risk_amount, price_risk, size, notional,
+            notional / leverage, leverage,
         )
         return size
 
@@ -207,6 +223,7 @@ class RiskManager:
         Call once per loop iteration to update peak equity and check
         if the drawdown halt threshold has been breached.
         """
+        self._last_equity = current_equity
         if current_equity > self._peak_equity:
             self._peak_equity = current_equity
             log.debug("New peak equity: $%.2f", self._peak_equity)
@@ -233,9 +250,10 @@ class RiskManager:
 
     @property
     def current_drawdown(self) -> float:
+        """Drawdown of the last equity passed to update_equity(), from the peak."""
         if self._peak_equity <= 0:
             return 0.0
-        return (self._peak_equity - 0) / self._peak_equity  # caller should pass equity
+        return (self._peak_equity - self._last_equity) / self._peak_equity
 
     # ------------------------------------------------------------------
     # In-memory position tracking

@@ -178,12 +178,19 @@ def _iteration(
     # ------------------------------------------------------------------
     # 8. Size the position
     # ------------------------------------------------------------------
+    # Risk is a fraction of total equity; the margin cap uses only the margin
+    # not already tied up by other open positions.
+    available_margin = exchange.get_available_margin()
+    if available_margin is None:
+        log.warning("[%s] Could not fetch available margin — skipping entry.", symbol)
+        return
     sz_decimals = market.get_sz_decimals(symbol)
     size = risk.compute_position_size(
         account_equity=equity,
         entry_price=entry_price,
         stop_loss_price=sig.stop_loss,
         sz_decimals=sz_decimals,
+        available_margin=available_margin,
     )
     if size <= 0:
         log.warning("[%s] Position size computed as 0 — skipping.", symbol)
